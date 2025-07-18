@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Zurich Runway Tracker</title>
+  <title>Zurich Runway Tracker (Live)</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -25,65 +25,144 @@
     th {
       background-color: #eee;
     }
+    .placeholder {
+      text-align: center;
+      font-style: italic;
+      color: #666;
+    }
   </style>
 </head>
 <body>
-  <h1>Zurich Landings (Runways 34, 28, 32)</h1>
+  <h1>Zurich Landings (Live Estimate)</h1>
   <table id="flight-table">
     <thead>
       <tr>
         <th>Flight</th>
-        <th>Origin</th>
+        <th>From</th>
+        <th>Aircraft</th>
         <th>ETA</th>
-        <th>Runway</th>
+        <th>Altitude (m)</th>
+        <th>Speed (m/s)</th>
+        <th>Distance to ZRH (km)</th>
       </tr>
     </thead>
     <tbody></tbody>
   </table>
 
   <script>
-    async function fetchFlights() {
-      const url = 'https://opensky-network.org/api/flights/arrival?airport=LSZH&begin=' + Math.floor(Date.now() / 1000 - 600) + '&end=' + Math.floor(Date.now() / 1000 + 600);
+    const ZRH_LAT = 47.4647;
+    const ZRH_LON = 8.5492;
+    const AERODATABOX_KEY = 'b96dea9b0fmsh7f1d22a03958855p1335fejsnc690de389577';
+
+    function haversine(lat1, lon1, lat2, lon2) {
+      const R = 6371;
+      const dLat = (lat2 - lat1) * Math.PI / 180;
+      const dLon = (lon2 - lon1) * Math.PI / 180;
+      const a =
+        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+        Math.sin(dLon / 2) * Math.sin(dLon / 2);
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return R * c;
+    }
+
+    function estimateETA(distanceKm, velocityMs) {
+      if (!velocityMs || velocityMs <= 0) return 'N/A';
+      const etaSeconds = distanceKm * 1000 / velocityMs;
+      const etaDate = new Date(Date.now() + etaSeconds * 1000);
+      return etaDate.toLocaleTimeString();
+    }
+
+    async function fetchFlightDetails(callsign) {
+      if (!callsign) return null;
+      const url = `https://aerodatabox.p.rapidapi.com/flights/callsign/${callsign}`;
+
+      try {
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'X-RapidAPI-Key': AERODATABOX_KEY,
+            'X-RapidAPI-Host': 'aerodatabox.p.rapidapi.com'
+          }
+        });
+
+        if (!response.ok) throw new Error('AeroDataBox fetch failed');
+        const data = await response.json();
+        return data && data.length > 0 ? data[0] : null;
+      } catch (err) {
+        console.error('AeroDataBox error:', err);
+        return null;
+      }
+    }
+
+    async function fetchLiveFlights() {
+      const url = 'https://opensky-network.org/api/states/all?lamin=47.3&lomin=8.3&lamax=47.6&lomax=8.8';
 
       try {
         const response = await fetch(url);
         if (!response.ok) throw new Error('Network response was not ok');
-        const data = await response.json();
+        const result = await response.json();
 
-        const runwayWhitelist = ['34', '28', '32']; // Placeholder - OpenSky does not expose runway
-
+        const states = result.states || [];
         const tableBody = document.querySelector('#flight-table tbody');
         tableBody.innerHTML = '';
 
-        data
-          .filter(flight => flight.estArrivalAirport === 'LSZH')
-          // Note: Runway data is not in OpenSky's free API. This is simulated.
-          .map(flight => ({
-            flight: flight.callsign.trim(),
-            origin: flight.estDepartureAirport,
-            eta: new Date(flight.lastSeen * 1000),
-            runway: ['34', '28', '32'][Math.floor(Math.random() * 3)] // Simulated for demo
-          }))
-          .filter(flight => runwayWhitelist.includes(flight.runway))
-          .sort((a, b) => a.eta - b.eta)
-          .forEach(flight => {
-            const row = document.createElement('tr');
-            row.innerHTML = `
-              <td>${flight.flight}</td>
-              <td>${flight.origin}</td>
-              <td>${flight.eta.toLocaleTimeString()}</td>
-              <td>${flight.runway}</td>
-            `;
-            tableBody.appendChild(row);
-          });
+        const filtered = states
+          .map(state => {
+            const [icao24, callsign, originCountry, timePosition, lastContact, lon, lat, baroAltitude, onGround, velocity] = state;
+            if (!lat || !lon || !callsign) return null;
+            const distance = haversine(lat, lon, ZRH_LAT, ZRH_LON);
+            return {
+              callsign: (callsign || '').trim(),
+              origin: originCountry,
+              aircraft: icao24,
+              lat, lon,
+              altitude: baroAltitude,
+              velocity,
+              distance,
+              eta: estimateETA(distance, velocity)
+            };
+          })
+          .filter(f => f && f.altitude !== null && f.altitude < 10000 && f.distance < 100)
+          .sort((a, b) => a.distance - b.distance)
+          .slice(0, 1); // Only show next closest flight
+
+        if (filtered.length === 0) {
+          const row = document.createElement('tr');
+          row.innerHTML = `<td colspan="7" class="placeholder">No active flights near Zurich at the moment.</td>`;
+          tableBody.appendChild(row);
+          return;
+        }
+
+        for (const flight of filtered) {
+          const details = await fetchFlightDetails(flight.callsign);
+
+          const fromCity = details?.departure?.airport?.municipalityName || flight.origin;
+          const aircraftModel = details?.aircraft?.model || flight.aircraft;
+          const etaDisplay = details?.arrival?.scheduledTimeLocal?.substring(11, 16) || flight.eta;
+
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td>${flight.callsign}</td>
+            <td>${fromCity}</td>
+            <td>${aircraftModel}</td>
+            <td>${etaDisplay}</td>
+            <td>${Math.round(flight.altitude)}</td>
+            <td>${Math.round(flight.velocity)}</td>
+            <td>${flight.distance.toFixed(1)}</td>
+          `;
+          tableBody.appendChild(row);
+        }
 
       } catch (error) {
         console.error('Fetch error:', error);
+        const tableBody = document.querySelector('#flight-table tbody');
+        tableBody.innerHTML = `<tr><td colspan="7" class="placeholder">Error loading flight data.</td></tr>`;
       }
     }
 
-    fetchFlights();
-    setInterval(fetchFlights, 10000); // Auto-refresh every 10 seconds
+    fetchLiveFlights();
+    setInterval(fetchLiveFlights, 30000); // Refresh every 30 seconds
   </script>
 </body>
 </html>
