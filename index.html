@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Zurich Runway Tracker</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      background: #f9f9f9;
+    }
+    h1 {
+      font-size: 24px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 20px;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 8px;
+      text-align: left;
+    }
+    th {
+      background-color: #eee;
+    }
+  </style>
+</head>
+<body>
+  <h1>Zurich Landings (Runways 34, 28, 32)</h1>
+  <table id="flight-table">
+    <thead>
+      <tr>
+        <th>Flight</th>
+        <th>Origin</th>
+        <th>ETA</th>
+        <th>Runway</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    async function fetchFlights() {
+      const url = 'https://opensky-network.org/api/flights/arrival?airport=LSZH&begin=' + Math.floor(Date.now() / 1000 - 600) + '&end=' + Math.floor(Date.now() / 1000 + 600);
+
+      try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Network response was not ok');
+        const data = await response.json();
+
+        const runwayWhitelist = ['34', '28', '32']; // Placeholder - OpenSky does not expose runway
+
+        const tableBody = document.querySelector('#flight-table tbody');
+        tableBody.innerHTML = '';
+
+        data
+          .filter(flight => flight.estArrivalAirport === 'LSZH')
+          // Note: Runway data is not in OpenSky's free API. This is simulated.
+          .map(flight => ({
+            flight: flight.callsign.trim(),
+            origin: flight.estDepartureAirport,
+            eta: new Date(flight.lastSeen * 1000),
+            runway: ['34', '28', '32'][Math.floor(Math.random() * 3)] // Simulated for demo
+          }))
+          .filter(flight => runwayWhitelist.includes(flight.runway))
+          .sort((a, b) => a.eta - b.eta)
+          .forEach(flight => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+              <td>${flight.flight}</td>
+              <td>${flight.origin}</td>
+              <td>${flight.eta.toLocaleTimeString()}</td>
+              <td>${flight.runway}</td>
+            `;
+            tableBody.appendChild(row);
+          });
+
+      } catch (error) {
+        console.error('Fetch error:', error);
+      }
+    }
+
+    fetchFlights();
+    setInterval(fetchFlights, 10000); // Auto-refresh every 10 seconds
+  </script>
+</body>
+</html>
